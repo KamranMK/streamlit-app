@@ -17,6 +17,17 @@
             "console": "integratedTerminal"
         },
         {
+            "name": "Streamlit: Run MAIN",
+            "type": "python",
+            "request": "launch",
+            "module": "streamlit",
+            "args": [
+                "run",
+                "${workspaceFolder}/pages/Main.py"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
             "name": "Python Debugger: Current File",
             "type": "debugpy",
             "request": "launch",
