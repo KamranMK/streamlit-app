@@ -6,7 +6,7 @@ from datetime import datetime
 st.set_page_config(
     page_title="RAG Chat Interface",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    # initial_sidebar_state="expanded"
 )
 
 # Mock data for RAG responses
