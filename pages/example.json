@@ -1,0 +1,31 @@
+{
+  "citations": [
+    {
+      "generatedResponsePart": {
+        "textResponsePart": {
+          "span": { "end": 123, "start": 0 },
+          "text": "Some dummy text here"
+        }
+      },
+      "retrievedReferences": [
+        {
+          "content": { "text": "Some Reference Text Here", "type": "TEXT" },
+          "location": {
+            "s3Location": { "uri": "s3://some_bucket_here/demo/example.md" },
+            "type": "S3"
+          }
+        },
+        {
+          "content": { "text": "Another Reference Text Here", "type": "TEXT" },
+          "location": {
+            "s3Location": { "uri": "s3://some_bucket_here/demo/example2.md" },
+            "type": "S3"
+          }
+        }
+      ]
+    }
+  ],
+  "output": {
+    "text": "Generated Text here. Contains texts from textResponseParts."
+  }
+}
