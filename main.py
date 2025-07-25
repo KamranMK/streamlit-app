@@ -193,7 +193,7 @@ MOCK_AWS_KB_RESPONSE = {
             "generatedResponsePart": {
                 "textResponsePart": {
                     "span": {"end": 123, "start": 0},
-                    "text": "Machine learning is a subset of artificial intelligence"
+                    "text": "Machine learning is a subset of artificial intelligence that enables computers to learn"
                 }
             },
             "retrievedReferences": [
@@ -235,13 +235,85 @@ MOCK_AWS_KB_RESPONSE = {
     }
 }
 
-def simulate_aws_kb_query(query: str) -> Dict[str, Any]:
+def simulate_aws_kb_query(query: str, conversation_history: List[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    Simulate AWS Knowledge Bases query
+    Simulate AWS Knowledge Bases query with conversation context
     In production, this would call the actual AWS Knowledge Bases API
+    
+    Args:
+        query: Current user query
+        conversation_history: List of previous messages for context
     """
+    # In production, you would format the conversation history and send it along with the query
+    # For example, you might create a context string like:
+    # context = format_conversation_for_kb(conversation_history)
+    # Then send both query and context to AWS Knowledge Bases
+    
     # Return mock response for demo
     return MOCK_AWS_KB_RESPONSE
+
+def format_conversation_for_kb(messages: List[Dict[str, Any]]) -> str:
+    """
+    Format conversation history for AWS Knowledge Bases context
+    
+    Args:
+        messages: List of conversation messages
+        
+    Returns:
+        Formatted conversation string for context
+    """
+    if not messages:
+        return ""
+    
+    context_parts = []
+    for msg in messages:
+        if msg["type"] == "user":
+            context_parts.append(f"Human: {msg['content']}")
+        elif msg["type"] == "assistant":
+            context_parts.append(f"Assistant: {msg['content']}")
+    
+    return "\n".join(context_parts)
+
+def build_kb_query_with_context(current_query: str, conversation_history: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Build the complete query payload for AWS Knowledge Bases including conversation context
+    
+    Args:
+        current_query: The current user input
+        conversation_history: Previous messages in the conversation
+        
+    Returns:
+        Query payload for AWS Knowledge Bases
+    """
+    # Format conversation history
+    context = format_conversation_for_kb(conversation_history[:-1])  # Exclude the current query
+    
+    # Build the contextualized query
+    if context:
+        full_query = f"""Previous conversation:
+{context}
+
+Current question: {current_query}
+
+Please answer the current question taking into account the conversation history above."""
+    else:
+        full_query = current_query
+    
+    # In production, this would be the actual AWS Knowledge Bases query payload
+    query_payload = {
+        "retrieveAndGenerateInput": {
+            "text": full_query
+        },
+        "retrieveAndGenerateConfiguration": {
+            "type": "KNOWLEDGE_BASE",
+            "knowledgeBaseConfiguration": {
+                "knowledgeBaseId": "your-kb-id",
+                "modelArn": "your-model-arn"
+            }
+        }
+    }
+    
+    return query_payload
 
 # Initialize session state
 if "messages" not in st.session_state:
@@ -313,9 +385,14 @@ if user_input:
         "timestamp": timestamp
     })
     
-    # Simulate AWS Knowledge Bases query
+    # Simulate AWS Knowledge Bases query with conversation context
     with st.spinner("Searching knowledge base..."):
-        raw_kb_response = simulate_aws_kb_query(user_input)
+        # Build query payload with conversation context
+        query_payload = build_kb_query_with_context(user_input, st.session_state.messages)
+        
+        # In production, you would call AWS Knowledge Bases API here:
+        # raw_kb_response = call_aws_knowledge_bases(query_payload)
+        raw_kb_response = simulate_aws_kb_query(user_input, st.session_state.messages)
         
         # Parse the response
         parsed_response = AWSKnowledgeBasesParser.parse_kb_response(raw_kb_response)
@@ -333,7 +410,8 @@ if user_input:
             "formatted_response": formatted_response,
             "references": parsed_response["references"],
             "citation_spans": parsed_response["citation_spans"],
-            "timestamp": timestamp
+            "timestamp": timestamp,
+            "query_payload": query_payload  # Store for debugging
         })
     
     st.rerun()
