@@ -2,11 +2,9 @@ import logging
 from typing import Dict, Any, Optional
 from adalflow.core.model_client import ModelClient
 from adalflow.core.types import ModelType, GeneratorOutput
-from adalflow.core.component import Component
-from adalflow.core.generator import Generator
 
 # Your Bedrock client imports
-from your_bedrock_module import EmailLabel, DEFAULT_MODEL_ID  # Replace with actual module name
+# from your_bedrock_module import EmailLabel, DEFAULT_MODEL_ID  # Replace with actual module name
 
 # Your AnthropicBedrockChatCompletions class
 import instructor
@@ -54,13 +52,57 @@ class AnthropicBedrockChatCompletions:
             self.logger.error(f"Could not complete prompt due to: {str(e)}")
             raise RuntimeError(f"Could not complete prompt due to: {str(e)}")
 
-class SimpleModelClient(ModelClient):
+# Create a simple wrapper that mimics Generator without optimization features
+class SimpleGenerator:
     """
-    A simplified version of the Bedrock model client for debugging purposes.
-    This extends ModelClient from adalflow to be compatible with Generator.
+    A simplified Generator that works offline by avoiding optimization components.
+    This directly uses the ModelClient without triggering AdalFlow's optimization layer.
     """
     
-    def __init__(self, model_id: str = DEFAULT_MODEL_ID):
+    def __init__(self, model_client: ModelClient, model_kwargs: Dict = None):
+        self.model_client = model_client
+        self.model_kwargs = model_kwargs or {}
+        self.logger = logging.getLogger("SimpleGenerator")
+        self.logger.info("SimpleGenerator initialized (offline mode)")
+    
+    def __call__(self, prompt_kwargs: Dict) -> GeneratorOutput:
+        """
+        Process the input using the model client directly.
+        """
+        self.logger.info(f"SimpleGenerator called with prompt_kwargs: {prompt_kwargs}")
+        
+        try:
+            # Extract input from prompt_kwargs
+            input_str = prompt_kwargs.get("input_str", "")
+            
+            # Convert to API kwargs using the model client
+            api_kwargs = self.model_client.convert_inputs_to_api_kwargs(
+                input=input_str,
+                model_kwargs=self.model_kwargs,
+                model_type=ModelType.LLM
+            )
+            
+            # Make the call
+            response = self.model_client.call(api_kwargs=api_kwargs, model_type=ModelType.LLM)
+            
+            self.logger.info("SimpleGenerator response generated successfully")
+            return response
+            
+        except Exception as e:
+            self.logger.error(f"SimpleGenerator error: {e}", exc_info=True)
+            return GeneratorOutput(data=None, error=str(e), usage=None, raw_response=None)
+    
+    def call(self, prompt_kwargs: Dict) -> GeneratorOutput:
+        """Alias for __call__ method"""
+        return self.__call__(prompt_kwargs)
+
+class SimpleModelClient(ModelClient):
+    """
+    A simplified version of the Bedrock model client for offline debugging purposes.
+    This extends ModelClient from adalflow to be compatible with SimpleGenerator.
+    """
+    
+    def __init__(self, model_id: str = "anthropic.claude-3-sonnet-20240229-v1:0"):
         # Initialize the parent ModelClient
         super().__init__()
         self.model_id = model_id
@@ -80,23 +122,25 @@ class SimpleModelClient(ModelClient):
         """
         self.logger.info(f"convert_inputs_to_api_kwargs called with input: {input}, model_kwargs: {model_kwargs}")
         
+        # Create a default EmailLabel for testing
+        class DefaultEmailLabel(BaseModel):
+            category: str
+            confidence: float
+            reasoning: str
+        
         # Convert the input to the format expected by your Bedrock client
         api_kwargs = {
             "modelId": model_kwargs.get("model", self.model_id),
             "max_tokens": model_kwargs.get("max_tokens", 1024),
             "messages": [{"role": "user", "content": str(input)}],
             "system_message": "You are a helpful, accurate AI assistant.",
-            "response_model": EmailLabel,
+            "response_model": model_kwargs.get("response_model", DefaultEmailLabel),
             "dump": True
         }
         
         # Override system_message if provided in model_kwargs
         if "system_message" in model_kwargs:
             api_kwargs["system_message"] = model_kwargs["system_message"]
-        
-        # Override response_model if provided in model_kwargs
-        if "response_model" in model_kwargs:
-            api_kwargs["response_model"] = model_kwargs["response_model"]
         
         # Override dump if provided in model_kwargs
         if "dump" in model_kwargs:
@@ -134,38 +178,55 @@ class SimpleModelClient(ModelClient):
         self.logger.info("acall method invoked (using sync call)")
         return self.call(api_kwargs, model_type)
 
-# Test code
+# Test code - Using SimpleGenerator instead of Generator to avoid optimization issues
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     
-    logger.info("Starting debug execution")
+    logger.info("Starting offline debug execution")
     
     try:
-        # Create a simple EmailLabel model for testing (replace with your actual model)
-        class TestEmailLabel(BaseModel):
-            label: str
-            confidence: float
+        # Create your EmailLabel model for testing
+        class EmailLabel(BaseModel):
+            category: str = "general"
+            confidence: float = 0.9
+            reasoning: str = "Default reasoning"
         
         # Test the simple client directly
         client = SimpleModelClient()
         logger.info("Created SimpleModelClient")
         
-        # Test with AdalFlow Generator
-        logger.info("Testing with AdalFlow Generator")
-        anthropic_llm = Generator(
+        # Use SimpleGenerator instead of Generator to avoid optimization components
+        logger.info("Testing with SimpleGenerator (offline-compatible)")
+        simple_llm = SimpleGenerator(
             model_client=client,
             model_kwargs={
                 "max_tokens": 1024,
-                "response_model": TestEmailLabel,  # Use your actual EmailLabel here
-                "system_message": "You are a helpful email classifier."
+                "response_model": EmailLabel,
+                "system_message": "You are a helpful email classifier. Classify the following message.",
+                "model": "anthropic.claude-3-sonnet-20240229-v1:0"
             }
         )
-        logger.info("Generator created successfully")
+        logger.info("SimpleGenerator created successfully")
         
-        # This should now work
-        generator_response = anthropic_llm(prompt_kwargs={"input_str": "I have a problem with my wardrobe."})
-        logger.info(f"Generator response: {generator_response}")
+        # This should work without hanging
+        test_messages = [
+            "I have a problem with my wardrobe.",
+            "Please schedule a meeting for tomorrow.",
+            "Thank you for your help with the project."
+        ]
+        
+        for i, message in enumerate(test_messages):
+            logger.info(f"Processing message {i+1}: {message}")
+            response = simple_llm(prompt_kwargs={"input_str": message})
+            logger.info(f"Response {i+1}: {response}")
+            
+            if response.data:
+                logger.info(f"Successful response data: {response.data}")
+            else:
+                logger.warning(f"Error in response: {response.error}")
+        
+        logger.info("All tests completed successfully!")
         
     except Exception as e:
         logger.error(f"Debug execution failed: {e}", exc_info=True)
