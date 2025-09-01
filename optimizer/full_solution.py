@@ -291,13 +291,7 @@ class EmailClassificationOptimizer(AdalComponent):
             model_kwargs=None   # Pass None to prevent automatic creation
         )
         
-        # Store configs for later use when training actually starts
-        self.backward_engine_model_config = backward_engine_model_config
-        self.teacher_model_config = teacher_model_config
-        self.text_optimizer_model_config = text_optimizer_model_config
-        self._main_model_client = model_client  # Store for later backward engine setup
-        
-        # Initialize parent WITHOUT triggering backward engine creation
+        # Initialize parent FIRST to avoid AttributeError
         super().__init__(
             task=task,
             eval_fn=eval_fn,
@@ -308,6 +302,12 @@ class EmailClassificationOptimizer(AdalComponent):
             teacher_model_config=None,
             text_optimizer_model_config=None,
         )
+        
+        # NOW store configs for later use after super().__init__()
+        self.backward_engine_model_config = backward_engine_model_config
+        self.teacher_model_config = teacher_model_config
+        self.text_optimizer_model_config = text_optimizer_model_config
+        self._main_model_client = model_client  # Store for later backward engine setup
         
         self.logger.info("EmailClassificationOptimizer initialized successfully!")
     
