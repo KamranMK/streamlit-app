@@ -137,25 +137,21 @@ class OfflineCompatibleModelClient(ModelClient):
 class EmailClassificationPipeline(Component):
     """
     Email classification task pipeline with structured output.
-    This is the main task component that will be optimized.
+    This version avoids Parameter initialization that triggers optimization setup.
     """
     
     def __init__(self, model_client: ModelClient, model_kwargs: Dict):
         super().__init__()
         
-        # Create optimizable parameters
-        self.system_prompt = Parameter(
-            data="""You are an expert email classifier. Analyze the email content carefully and classify it into one of these categories:
+        # DON'T create Parameters here - they trigger optimization setup during Generator init
+        # Instead, store the prompt data as regular strings
+        self._system_prompt_data = """You are an expert email classifier. Analyze the email content carefully and classify it into one of these categories:
 - work: Professional emails, meetings, business communications
 - personal: Personal messages, family, friends
 - spam: Unwanted promotional emails, suspicious content
 - promotional: Legitimate marketing emails, newsletters
 
-Provide your reasoning step-by-step and assign a confidence score.""",
-            role_desc="The system prompt that guides the email classification task",
-            param_type=ParameterType.PROMPT,
-            requires_opt=True
-        )
+Provide your reasoning step-by-step and assign a confidence score."""
         
         # Template for the email classification
         template = r"""<SYS>
@@ -171,14 +167,26 @@ Please analyze this email and provide:
 3. Confidence score (0-1)
 """
         
-        # Create the generator with structured output
+        # Create the generator WITHOUT Parameters in prompt_kwargs to avoid hanging
         self.generator = Generator(
             model_client=model_client,
             model_kwargs=model_kwargs,
             template=template,
-            prompt_kwargs={"system_prompt": self.system_prompt},
+            prompt_kwargs={"system_prompt": self._system_prompt_data},  # Use string, not Parameter
             output_processors=None  # Let structured output handle parsing
         )
+        
+        # NOW create the Parameter after Generator is initialized
+        # This Parameter will be used for optimization later
+        self.system_prompt = Parameter(
+            data=self._system_prompt_data,
+            role_desc="The system prompt that guides the email classification task",
+            param_type=ParameterType.PROMPT,
+            requires_opt=True
+        )
+        
+        # Update the generator's prompt_kwargs to use the Parameter for optimization
+        self.generator.prompt_kwargs["system_prompt"] = self.system_prompt
     
     def call(self, email_content: str, id: str = None) -> GeneratorOutput:
         """Process a single email classification request."""
