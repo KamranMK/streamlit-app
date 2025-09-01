@@ -12,7 +12,7 @@ from adalflow.optim.types import ParameterType
 from adalflow.optim.trainer.adal import AdalComponent
 from adalflow.optim.trainer.trainer import Trainer
 from adalflow.optim.text_grad.text_loss_with_eval_fn import EvalFnToTextLoss
-from adalflow.optim.text_grad.ops import BackwardEngine
+from adalflow.core.generator import BackwardEngine
 from adalflow.eval.answer_match_acc import AnswerMatchAcc
 
 # Your Bedrock client imports
@@ -187,7 +187,7 @@ Please analyze this email and provide:
 class EmailClassificationOptimizer(AdalComponent):
     """
     AdalComponent for optimizing email classification with offline support.
-    This handles the optimization pipeline while working in offline environments.
+    Key: Initialize EvalFnToTextLoss WITHOUT automatic backward engine creation.
     """
     
     def __init__(
@@ -198,50 +198,57 @@ class EmailClassificationOptimizer(AdalComponent):
         teacher_model_config: Dict,
         text_optimizer_model_config: Dict,
     ):
-        # Create the task pipeline
+        # Create the task pipeline FIRST
         task = EmailClassificationPipeline(model_client, model_kwargs)
         
         # Create evaluation function
         eval_fn = AnswerMatchAcc(type="exact_match").compute_single_item
         
-        # Create loss function with explicit backward engine configuration
-        # This is the key to making it work offline - we provide explicit config
+        # CRITICAL: Create EvalFnToTextLoss with explicit parameters to prevent automatic initialization
         loss_fn = EvalFnToTextLoss(
             eval_fn=eval_fn,
             eval_fn_desc="Exact match between predicted and ground truth category",
-            backward_engine=None,  # Will be configured later in configure_backward_engine
-            model_client=None,     # Will be configured later
-            model_kwargs=None      # Will be configured later
+            # These parameters prevent automatic backward engine creation
+            backward_engine=None,
+            model_client=model_client,  # Provide the client explicitly
+            model_kwargs=backward_engine_model_config  # Provide model config explicitly
         )
         
-        # Initialize the parent with all required components
+        # Store configs for later use
+        self.backward_engine_model_config = backward_engine_model_config
+        self.teacher_model_config = teacher_model_config
+        self.text_optimizer_model_config = text_optimizer_model_config
+        
+        # Initialize parent WITHOUT triggering backward engine creation
         super().__init__(
             task=task,
             eval_fn=eval_fn,
             loss_fn=loss_fn,
-            backward_engine_model_config=backward_engine_model_config,
-            teacher_model_config=teacher_model_config,
-            text_optimizer_model_config=text_optimizer_model_config,
+            # Don't pass these to super() - they trigger immediate initialization
+            backward_engine=None,
+            backward_engine_model_config=None,
+            teacher_model_config=None,
+            text_optimizer_model_config=None,
         )
         
         self.logger = logging.getLogger("EmailClassificationOptimizer")
-        self.logger.info("EmailClassificationOptimizer initialized")
+        self.logger.info("EmailClassificationOptimizer initialized successfully (offline mode)")
     
     def configure_backward_engine(self, *args, **kwargs):
         """
-        Configure the backward engine for optimization.
-        This method is called by the Trainer and handles offline initialization.
+        Configure the backward engine manually when needed.
+        This is called by the Trainer when optimization actually starts.
         """
-        self.logger.info("Configuring backward engine for offline usage...")
+        self.logger.info("Configuring backward engine...")
         
         try:
-            # Create the backward engine with the same model client
+            # Create backward engine using the same model client
             backward_engine = BackwardEngine(
                 model_client=self.task.generator.model_client,
                 model_kwargs=self.backward_engine_model_config
             )
             
-            # Set the backward engine on the loss function
+            # Configure the loss function's backward engine
             self.loss_fn.set_backward_engine(
                 backward_engine=backward_engine,
                 model_client=self.task.generator.model_client,
@@ -249,11 +256,12 @@ class EmailClassificationOptimizer(AdalComponent):
             )
             
             self.logger.info("Backward engine configured successfully")
+            return True
             
         except Exception as e:
             self.logger.error(f"Error configuring backward engine: {e}")
-            # In offline mode, we can still proceed with demo optimization only
-            self.logger.warning("Continuing without backward engine - only demo optimization available")
+            self.logger.warning("Continuing without backward engine - limited optimization available")
+            return False
     
     def prepare_task(self, sample: EmailDataSample) -> Tuple[Callable, Dict]:
         """Prepare a single task sample for processing."""
@@ -292,6 +300,7 @@ class EmailClassificationOptimizer(AdalComponent):
 def create_offline_training_setup():
     """
     Create a complete offline-compatible training setup for email classification.
+    This approach prevents the hanging by avoiding automatic initialization.
     """
     
     # Set up logging
@@ -309,8 +318,10 @@ def create_offline_training_setup():
     
     # Create model client
     model_client = OfflineCompatibleModelClient()
+    logger.info("Model client created successfully")
     
-    # Create the AdalComponent for optimization
+    # Create the AdalComponent - this is where the hanging was occurring
+    logger.info("Creating AdalComponent (this should not hang now)...")
     adal_component = EmailClassificationOptimizer(
         model_client=model_client,
         model_kwargs=model_config,
@@ -318,16 +329,19 @@ def create_offline_training_setup():
         teacher_model_config=model_config,          # Same model for teacher
         text_optimizer_model_config=model_config,   # Same model for text optimizer
     )
+    logger.info("AdalComponent created successfully!")
     
-    # Create trainer with conservative settings for offline mode
+    # Create trainer with offline-friendly settings
     trainer = Trainer(
         adaltask=adal_component,
-        strategy="random_sampling",  # Use random sampling instead of constrained
-        max_steps=5,  # Fewer steps for offline testing
+        strategy="random",  # Use random instead of constrained for offline
+        max_steps=3,  # Very few steps for offline testing
         num_workers=1,  # Single worker to avoid connection issues
-        optimization_order="demo_and_prompt",  # Optimize both demos and prompts
-        raw_shots=1,      # Minimal few-shot examples
+        train_batch_size=2,  # Small batch size
+        raw_shots=0,      # Start with no few-shot examples
         bootstrap_shots=1, # Minimal bootstrap examples
+        debug=True,  # Enable debug mode for better logging
+        disable_backward=False,  # Allow backward pass when properly configured
     )
     
     logger.info("Offline training setup completed successfully!")
