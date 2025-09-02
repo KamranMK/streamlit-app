@@ -236,10 +236,12 @@ class EmailClassificationPipeline(Component):
 
 Provide your reasoning step-by-step and assign a confidence score."""
         
-        # Template for the email classification
+        # Template for the email classification with demo support
         template = r"""<SYS>
 {{system_prompt}}
 </SYS>
+
+{{few_shot_demos}}
 
 Email to classify:
 {{email_content}}
@@ -258,12 +260,15 @@ Please analyze this email and provide:
             model_client=model_client,
             model_kwargs=model_kwargs,
             template=template,
-            prompt_kwargs={"system_prompt": self._system_prompt_data}
+            prompt_kwargs={
+                "system_prompt": self._system_prompt_data,
+                "few_shot_demos": ""  # Start with empty demos
+            }
         )
         
         self.logger.info("OfflineGenerator created successfully!")
         
-        # Create the Parameter for optimization
+        # Create the Parameters for optimization
         self.system_prompt = Parameter(
             data=self._system_prompt_data,
             role_desc="The system prompt that guides the email classification task",
@@ -271,8 +276,17 @@ Please analyze this email and provide:
             requires_opt=True
         )
         
-        # Update the generator to use the Parameter for optimization
+        # Add few-shot demo parameter for bootstrap optimization
+        self.few_shot_demos = Parameter(
+            data=None,  # Will be populated by bootstrap optimizer
+            role_desc="Few-shot examples to help the model learn email classification patterns",
+            param_type=ParameterType.DEMOS,
+            requires_opt=True
+        )
+        
+        # Update the generator to use the Parameters for optimization
         self.generator.prompt_kwargs["system_prompt"] = self.system_prompt
+        self.generator.prompt_kwargs["few_shot_demos"] = self.few_shot_demos
     
     def call(self, email_content: str, id: str = None) -> GeneratorOutput:
         """Process a single email classification request."""
@@ -404,25 +418,42 @@ def create_offline_training_setup():
     
     logger.info("Setting up offline-compatible email classification optimization...")
     
-    # Model configurations - using the same model for all components in offline mode
+    # Create model client
+    model_client = OfflineCompatibleModelClient()
+    logger.info("Model client created successfully")
+    
+    # Model configurations - need to include the actual model_client instance
     model_config = {
         "model": "anthropic.claude-3-sonnet-20240229-v1:0",
         "max_tokens": 1024,
         "temperature": 0.1
     }
     
-    # Create model client
-    model_client = OfflineCompatibleModelClient()
-    logger.info("Model client created successfully")
+    # Configuration for different optimization components
+    # Each needs both the model_client instance and model_kwargs
+    backward_engine_config = {
+        "model_client": model_client,
+        "model_kwargs": model_config
+    }
+    
+    teacher_model_config = {
+        "model_client": model_client,
+        "model_kwargs": model_config
+    }
+    
+    text_optimizer_config = {
+        "model_client": model_client,
+        "model_kwargs": model_config
+    }
     
     # Create the AdalComponent - this should NOT hang now
     logger.info("Creating AdalComponent (using OfflineGenerator)...")
     adal_component = EmailClassificationOptimizer(
         model_client=model_client,
         model_kwargs=model_config,
-        backward_engine_model_config=model_config,
-        teacher_model_config=model_config,
-        text_optimizer_model_config=model_config,
+        backward_engine_model_config=backward_engine_config,
+        teacher_model_config=teacher_model_config,
+        text_optimizer_model_config=text_optimizer_config,
     )
     logger.info("AdalComponent created successfully!")
     
