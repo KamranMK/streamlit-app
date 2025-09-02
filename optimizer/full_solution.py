@@ -18,12 +18,27 @@ from adalflow.eval.answer_match_acc import AnswerMatchAcc
 import instructor
 import boto3
 from typing import Type
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-# Example structured output model for text classification
+# Create a proper Pydantic model for instructor (not AdalFlow DataClass)
+class EmailClassificationPydantic(BaseModel):
+    """Pydantic model for instructor structured output"""
+    category: str = Field(
+        description="The email category: 'work', 'personal', 'spam', or 'promotional'"
+    )
+    reasoning: str = Field(
+        description="Step-by-step reasoning for the classification decision"
+    )
+    confidence: float = Field(
+        description="Confidence score between 0 and 1 for the classification",
+        ge=0.0,
+        le=1.0
+    )
+
+# Keep the AdalFlow DataClass for internal use
 @dataclass
 class EmailClassificationOutput(DataClass):
-    """Structured output for email classification task"""
+    """AdalFlow DataClass for internal pipeline use"""
     category: str = field(
         metadata={"desc": "The email category: 'work', 'personal', 'spam', or 'promotional'"}
     )
@@ -100,13 +115,13 @@ class OfflineCompatibleModelClient(ModelClient):
     ) -> Dict:
         """Convert AdalFlow standard inputs to API-specific format."""
         
-        # Use EmailClassificationOutput as default response model
+        # Use the Pydantic model for instructor compatibility
         api_kwargs = {
             "modelId": model_kwargs.get("model", self.model_id),
             "max_tokens": model_kwargs.get("max_tokens", 1024),
             "messages": [{"role": "user", "content": str(input)}],
             "system_message": "You are an expert email classifier. Analyze the email content and provide a structured classification.",
-            "response_model": EmailClassificationOutput,
+            "response_model": EmailClassificationPydantic,  # Use Pydantic model
             "dump": True
         }
         
@@ -114,7 +129,13 @@ class OfflineCompatibleModelClient(ModelClient):
         if "system_message" in model_kwargs:
             api_kwargs["system_message"] = model_kwargs["system_message"]
         if "response_model" in model_kwargs:
-            api_kwargs["response_model"] = model_kwargs["response_model"]
+            # Allow overriding but ensure it's a Pydantic model
+            response_model = model_kwargs["response_model"]
+            if hasattr(response_model, '__bases__') and BaseModel in response_model.__bases__:
+                api_kwargs["response_model"] = response_model
+            else:
+                self.logger.warning(f"Provided response_model is not a Pydantic BaseModel, using default")
+                api_kwargs["response_model"] = EmailClassificationPydantic
         if "dump" in model_kwargs:
             api_kwargs["dump"] = model_kwargs["dump"]
             
