@@ -292,7 +292,155 @@ Please analyze this email and provide:
         """Process a single email classification request."""
         return self.generator.call(prompt_kwargs={"email_content": email_content})
 
-class EmailClassificationOptimizer(AdalComponent):
+class OfflineBackwardEngine:
+    """
+    A complete offline backward engine that replicates AdalFlow's textual gradient logic.
+    Uses your offline model client to generate LLM-based gradients just like the real AdalFlow.
+    This gives you the full gradient-based prompt optimization experience offline.
+    """
+    
+    def __init__(self, model_client: ModelClient = None, model_kwargs: Dict = None):
+        self.model_client = model_client
+        self.model_kwargs = model_kwargs or {}
+        self.logger = logging.getLogger("OfflineBackwardEngine")
+        self.logger.info("OfflineBackwardEngine initialized with LLM gradient generation")
+        
+        # Create a simple response model for gradient generation
+        class GradientResponse(BaseModel):
+            feedback: str = Field(
+                description="Detailed feedback on why the current prompt failed and specific suggestions for improvement"
+            )
+            suggestion: str = Field(
+                description="A concrete suggestion for improving the prompt based on the failure analysis"
+            )
+            confidence: float = Field(
+                description="Confidence in the feedback (0.0 to 1.0)",
+                ge=0.0, le=1.0
+            )
+        
+        self.gradient_response_model = GradientResponse
+        
+        # Template for generating textual gradients (based on AdalFlow's approach)
+        self.gradient_template = """You are an expert prompt engineer analyzing why a language model failed on a task.
+
+CONTEXT:
+- Task: {task_description}
+- Current Prompt: {current_prompt}
+- Model Prediction: {model_prediction}
+- Correct Answer: {ground_truth}
+- Evaluation Score: {evaluation_score}
+
+ANALYSIS REQUIRED:
+1. Identify why the current prompt led to the incorrect prediction
+2. Suggest specific improvements to the prompt to fix this failure
+3. Focus on concrete, actionable changes
+
+Your feedback should be:
+- Specific and actionable
+- Based on the failure pattern you observe
+- Aimed at improving classification accuracy
+- Focused on prompt clarity, examples, or instructions
+
+Provide detailed feedback and a concrete suggestion for improvement."""
+    
+    def __call__(self, **kwargs):
+        """
+        Generate textual gradients using the offline model client.
+        This replicates AdalFlow's backward engine logic with LLM-generated feedback.
+        """
+        try:
+            return self._generate_textual_gradient(**kwargs)
+        except Exception as e:
+            self.logger.error(f"Error generating gradient: {e}")
+            # Fallback to basic feedback if LLM call fails
+            return self._generate_fallback_gradient(**kwargs)
+    
+    def _generate_textual_gradient(self, **kwargs):
+        """Generate LLM-based textual gradients using the offline model client."""
+        
+        # Extract gradient context information
+        response = kwargs.get('response')
+        ground_truth = kwargs.get('ground_truth', '')
+        eval_score = kwargs.get('eval_score', 0.0)
+        context = kwargs.get('context', '')
+        variable_desc = kwargs.get('variable_desc', 'system prompt')
+        
+        # Extract current prompt and prediction
+        current_prompt = self._extract_current_prompt(context, variable_desc)
+        model_prediction = self._extract_model_prediction(response)
+        
+        # Prepare the gradient generation prompt
+        gradient_prompt = self.gradient_template.format(
+            task_description="Email classification into work, personal, spam, or promotional categories",
+            current_prompt=current_prompt,
+            model_prediction=model_prediction,
+            ground_truth=ground_truth,
+            evaluation_score=eval_score
+        )
+        
+        self.logger.info("Generating LLM-based textual gradient...")
+        
+        # Create API kwargs for gradient generation
+        api_kwargs = {
+            "modelId": self.model_kwargs.get("model", "anthropic.claude-3-sonnet-20240229-v1:0"),
+            "max_tokens": self.model_kwargs.get("max_tokens", 1024),
+            "messages": [{"role": "user", "content": gradient_prompt}],
+            "system_message": "You are an expert prompt engineer providing detailed feedback for prompt optimization.",
+            "response_model": self.gradient_response_model,
+            "dump": True
+        }
+        
+        # Generate gradient using the offline model client
+        response = self.model_client.call(api_kwargs=api_kwargs, model_type=ModelType.LLM)
+        
+        if response.data and isinstance(response.data, dict):
+            feedback = response.data.get('feedback', 'No specific feedback generated')
+            suggestion = response.data.get('suggestion', 'Consider refining the prompt')
+            
+            # Format the gradient in AdalFlow's expected format
+            textual_gradient = f"FEEDBACK: {feedback}\n\nSUGGESTION: {suggestion}"
+            
+            self.logger.info(f"Generated LLM gradient: {textual_gradient[:200]}...")
+            return textual_gradient
+        else:
+            self.logger.warning("No valid gradient data received, using fallback")
+            return self._generate_fallback_gradient(**kwargs)
+    
+    def _generate_fallback_gradient(self, **kwargs):
+        """Generate basic feedback if LLM gradient generation fails."""
+        response = kwargs.get('response')
+        ground_truth = kwargs.get('ground_truth', '')
+        
+        model_prediction = self._extract_model_prediction(response)
+        
+        if model_prediction != ground_truth:
+            return f"FEEDBACK: The model predicted '{model_prediction}' but the correct answer is '{ground_truth}'. The prompt may need clearer category definitions or better examples.\n\nSUGGESTION: Add specific examples for the '{ground_truth}' category and refine the distinction between '{model_prediction}' and '{ground_truth}' categories."
+        else:
+            return "FEEDBACK: The prediction was correct, but consider adding more specific instructions for edge cases.\n\nSUGGESTION: Enhance the prompt with clearer reasoning instructions."
+    
+    def _extract_current_prompt(self, context, variable_desc):
+        """Extract the current prompt from the context."""
+        if "system_prompt" in context.lower():
+            # Try to extract the system prompt section
+            lines = context.split('\n')
+            for i, line in enumerate(lines):
+                if 'system_prompt' in line.lower() or '<SYS>' in line:
+                    # Look for the prompt content in the next few lines
+                    prompt_lines = []
+                    for j in range(i, min(i + 10, len(lines))):
+                        if lines[j].strip():
+                            prompt_lines.append(lines[j].strip())
+                    return '\n'.join(prompt_lines)
+        return context[:500] if context else "Current prompt not available"
+    
+    def _extract_model_prediction(self, response):
+        """Extract the model's prediction from the response."""
+        if hasattr(response, 'data') and response.data:
+            if isinstance(response.data, dict):
+                return response.data.get('category', 'unknown')
+            elif hasattr(response.data, 'category'):
+                return response.data.category
+        return "unknown"
     """
     AdalComponent for optimizing email classification with offline support.
     This version completely avoids BackwardEngine initialization issues.
@@ -457,17 +605,18 @@ def create_offline_training_setup():
     )
     logger.info("AdalComponent created successfully!")
     
-    # Create trainer with offline-friendly settings
+    # Create trainer with prompt optimization enabled but offline compatible
     trainer = Trainer(
         adaltask=adal_component,
         strategy="random",
-        max_steps=3,
+        max_steps=5,  # Increase steps for better optimization
         num_workers=1,
         train_batch_size=2,
         raw_shots=0,
         bootstrap_shots=1,
         debug=True,
-        disable_backward=False,
+        disable_backward=False,  # ✅ Enable backward pass with mock engine
+        disable_backward_gradients=False,  # ✅ Enable gradient computation with mock feedback
     )
     
     logger.info("Offline training setup completed successfully!")
